@@ -1,0 +1,31 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+*.secret
+*.pfx
+*.pem
+*.key
+
+# State / scratch
+state*.json
+agent-output*.txt
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tar
+*.zip
