@@ -8,9 +8,12 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 SIDECAR = os.getenv("SIDECAR_URL", "http://localhost:5000")
-AGENT_APP_ID = os.getenv("AGENT_APP_ID", "e60fdc80-915f-439c-8539-3188526da135")
-BLUEPRINT_APP_ID = os.getenv("BLUEPRINT_APP_ID", "942ed802-37d6-4969-baf9-717f7b692d53")
+AGENT_APP_ID = os.getenv("AGENT_APP_ID", "")
+BLUEPRINT_APP_ID = os.getenv("BLUEPRINT_APP_ID", "")
 TENANT_ID = os.getenv("TENANT_ID", "")
+# Foreign Agent: an Agent Identity App ID parented by a DIFFERENT Blueprint.
+# Used in Step 5 to prove Entra rejects cross-Blueprint impersonation attempts.
+FOREIGN_AGENT_APP_ID = os.getenv("FOREIGN_AGENT_APP_ID", "")
 
 app = FastAPI()
 
@@ -40,25 +43,40 @@ def fmt_exp(claims: dict) -> str:
     return f"(expires in {delta // 60}m {delta % 60}s)"
 
 
-def fetch_token(as_agent: bool, correlation_id: str | None = None, force_refresh: bool = False) -> dict:
+def fetch_token(as_agent: bool, correlation_id: str | None = None, force_refresh: bool = False, agent_id: str | None = None) -> dict:
     qs = {}
+    effective_agent = agent_id if agent_id else AGENT_APP_ID
     if as_agent:
-        qs["AgentIdentity"] = AGENT_APP_ID
+        qs["AgentIdentity"] = effective_agent
     if correlation_id:
         qs["optionsOverride.AcquireTokenOptions.CorrelationId"] = correlation_id
     if force_refresh:
         qs["optionsOverride.AcquireTokenOptions.ForceRefresh"] = "true"
     r = httpx.get(f"{SIDECAR}/AuthorizationHeaderUnauthenticated/graph",
                   params=qs, timeout=20)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        # Surface sidecar's error verbatim so we can see the AADSTS message
+        try:
+            err_body = r.json()
+        except Exception:
+            err_body = {"_raw": r.text}
+        return {
+            "asAgent": as_agent,
+            "agentIdUsed": effective_agent if as_agent else None,
+            "error": True,
+            "sidecarHttp": r.status_code,
+            "sidecarBody": err_body,
+            "correlationId": correlation_id,
+        }
     bearer = r.json().get("authorizationHeader", "").replace("Bearer ", "")
     claims = decode_jwt(bearer)
     return {
         "asAgent": as_agent,
+        "agentIdUsed": effective_agent if as_agent else None,
         "bearer": bearer,
         "bearer_short": bearer[:60] + "..." + bearer[-20:],
         "claims": claims,
-        "appid_is_agent": claims.get("appid") == AGENT_APP_ID,
+        "appid_is_agent": claims.get("appid") == effective_agent,
         "appid_is_blueprint": claims.get("appid") == BLUEPRINT_APP_ID,
         "snapshot": False,
         "uti": claims.get("uti"),
@@ -86,19 +104,33 @@ def warmup():
 
 
 @app.get("/api/token")
-def api_token(asAgent: bool = True):
+def api_token(asAgent: bool = True, scenario: str = "valid"):
+    """scenario: 'valid' = use AGENT_APP_ID (parented by our Blueprint).
+                 'foreign' = use FOREIGN_AGENT_APP_ID (parented by a DIFFERENT Blueprint).
+       Foreign call should fail at Entra with an AADSTS error proving Entra enforces
+       Blueprint-Agent parentage server-side."""
     import uuid
     cid = str(uuid.uuid4())
+    override = None
+    if scenario == "foreign":
+        if not FOREIGN_AGENT_APP_ID:
+            return JSONResponse({"error": "FOREIGN_AGENT_APP_ID env var is not set"}, status_code=400)
+        override = FOREIGN_AGENT_APP_ID
     try:
-        return fetch_token(asAgent, correlation_id=cid, force_refresh=True)
+        return fetch_token(asAgent, correlation_id=cid, force_refresh=True, agent_id=override)
     except Exception as e:
         return JSONResponse({"error": str(e), "correlationId": cid}, status_code=502)
 
 
 @app.get("/api/graph-users")
-def api_graph_users(asAgent: bool = True):
+def api_graph_users(asAgent: bool = True, scenario: str = "valid"):
     import uuid
     cid = str(uuid.uuid4())
+    effective_agent = AGENT_APP_ID
+    if scenario == "foreign":
+        if not FOREIGN_AGENT_APP_ID:
+            return JSONResponse({"error": "FOREIGN_AGENT_APP_ID env var is not set"}, status_code=400)
+        effective_agent = FOREIGN_AGENT_APP_ID
     qs = {
         "optionsOverride.RelativePath": "users?$top=3&$select=displayName,userPrincipalName,id",
         "optionsOverride.HttpMethod": "Get",
@@ -106,12 +138,29 @@ def api_graph_users(asAgent: bool = True):
         "optionsOverride.AcquireTokenOptions.ForceRefresh": "true",
     }
     if asAgent:
-        qs["AgentIdentity"] = AGENT_APP_ID
+        qs["AgentIdentity"] = effective_agent
     try:
         r = httpx.post(f"{SIDECAR}/DownstreamApiUnauthenticated/graph",
                        params=qs, timeout=25)
     except Exception as e:
         return JSONResponse({"error": str(e), "correlationId": cid}, status_code=502)
+    # If sidecar itself returned an error (e.g., Entra rejected the AgentIdentity),
+    # show its body verbatim so the AADSTS code is visible.
+    if r.status_code >= 400:
+        try:
+            err_body = r.json()
+        except Exception:
+            err_body = {"_raw": r.text}
+        return {
+            "sidecarHttp": r.status_code,
+            "graphHttp": None,
+            "sidecarBody": err_body,
+            "asAgent": asAgent,
+            "scenario": scenario,
+            "agentIdUsed": effective_agent if asAgent else None,
+            "correlationId": cid,
+            "error": True,
+        }
     wrapper = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     inner_status = wrapper.get("statusCode")
     inner_body = wrapper.get("content", "")
@@ -119,10 +168,9 @@ def api_graph_users(asAgent: bool = True):
         parsed = json.loads(inner_body) if isinstance(inner_body, str) else inner_body
     except Exception:
         parsed = {"_raw": inner_body}
-    # Also fetch the JWT we just used so we can show its uti / iat
     try:
-        tok = fetch_token(asAgent, correlation_id=cid, force_refresh=False)
-        tclaims = tok.get("claims") or {}
+        tok = fetch_token(asAgent, correlation_id=cid, force_refresh=False, agent_id=(effective_agent if asAgent else None))
+        tclaims = (tok.get("claims") or {}) if not tok.get("error") else {}
     except Exception:
         tclaims = {}
     return {
@@ -130,6 +178,8 @@ def api_graph_users(asAgent: bool = True):
         "graphHttp": inner_status,
         "graphBody": parsed,
         "asAgent": asAgent,
+        "scenario": scenario,
+        "agentIdUsed": effective_agent if asAgent else None,
         "correlationId": cid,
         "tokenUti": tclaims.get("uti"),
         "tokenAppid": tclaims.get("appid"),
@@ -146,6 +196,7 @@ def api_info():
         "tenantId": TENANT_ID,
         "blueprintAppId": BLUEPRINT_APP_ID,
         "agentAppId": AGENT_APP_ID,
+        "foreignAgentAppId": FOREIGN_AGENT_APP_ID or None,
         "sidecar": SIDECAR,
         "snapshotCapturedAt": SNAPSHOT["captured_at"],
     }
@@ -229,6 +280,15 @@ PAGE = """<!doctype html>
   <div id="t4" class="mt-3"></div>
 </div>
 
+<div class="step" style="border-color:#fca5a5; background:#fef2f2">
+  <h3>Step 5 — Security boundary: what if the Agent belongs to a <i>different</i> Blueprint?</h3>
+  <p class="why">We ask the same sidecar (which holds <b>our</b> Blueprint's secret) to mint a token for an Agent whose parent is a <b>different</b> Blueprint. Entra checks the parentage server-side and should <b>reject</b> the request — proving a Blueprint cannot impersonate Agents it doesn't own. The error message from Entra will appear below.</p>
+  <div id="foreign-info" class="small text-muted mb-2"></div>
+  <button class="btn btn-danger" onclick="getToken(true,'foreign')">Try to get token for FOREIGN Agent</button>
+  <button class="btn btn-danger" onclick="callGraph(true,'foreign')">Call Graph as FOREIGN Agent</button>
+  <div id="t5" class="mt-3"></div>
+</div>
+
 <details class="text-muted small mt-3"><summary>How the demo handles the sidecar's MSAL token cache</summary>
 <p class="mt-2">The auth sidecar's MSAL token cache is keyed on <code>(client_id, scope, tenant)</code> &mdash; the <code>AgentIdentity</code> parameter is <em>not</em> part of the cache key. Without intervention, once the sidecar mints an Agent token for <code>graph/.default</code>, every later call returns the same cached token regardless of <code>AgentIdentity</code>.</p>
 <p>This demo solves it by sending <code>optionsOverride.AcquireTokenOptions.ForceRefresh=true</code> on every click, so each button always triggers a fresh acquisition from Entra. Combined with a per-click <code>CorrelationId</code> GUID, every click produces a brand new Sign-in log entry that you can locate by Request ID.</p>
@@ -239,18 +299,37 @@ PAGE = """<!doctype html>
 <script>
 let lastToken = null;
 
-async function getToken(asAgent){
-  const target = asAgent ? "t1" : "t4";
+async function getToken(asAgent, scenario){
+  scenario = scenario || "valid";
+  const target = scenario === "foreign" ? "t5" : (asAgent ? "t1" : "t4");
   setBusy(target, "Loading...");
-  const r = await fetch("/api/token?asAgent=" + asAgent);
+  const r = await fetch("/api/token?asAgent=" + asAgent + "&scenario=" + scenario);
   const j = await r.json();
+  if (scenario === "foreign"){
+    // Expecting failure — render the error nicely
+    if (j.error || j.sidecarBody){
+      const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
+      setHTML(target,
+        `<div class="ok">✓ Entra correctly REJECTED the foreign Agent request</div>
+         <div class="small mt-2">This is the security boundary in action. The sidecar authenticated with our Blueprint's secret, but Entra checked the parentage of <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span> and refused to mint a token because it isn't parented by our Blueprint.</div>
+         <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
+         <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
+      );
+    } else {
+      // Unexpected success — flag it red
+      setHTML(target,
+        `<div class="bad">✗ UNEXPECTED: token was minted for the foreign Agent. The parentage check did NOT trigger.</div>
+         <div class="small text-muted">appid in token: <span class="pill">${j.claims && j.claims.appid || '?'}</span></div>
+         <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
+      );
+    }
+    return;
+  }
   if (j.error){ setHTML(target, errBox(j.error)); return; }
   lastToken = j;
   document.getElementById("btnDecode").disabled = false;
   const ok = asAgent ? j.appid_is_agent : j.appid_is_blueprint;
-  const banner = "";
   setHTML(target,
-    banner +
     `<div class="${ok?'ok':'bad'}">${ok?'✓':'✗'} sidecar returned a token ${j.exp_human}</div>
      <div class="small text-muted">appid in token: <span class="pill">${j.claims.appid||'?'}</span> ${ok?'(matches expected '+(asAgent?'Agent':'Blueprint')+')':''}</div>` +
     corrBlock(j.uti, j.appid, j.iat, j.app_displayname, j.correlationId) +
@@ -283,11 +362,29 @@ function decodeLast(){
   setHTML("t2", html);
 }
 
-async function callGraph(asAgent){
-  const target = asAgent ? "t3" : "t4";
+async function callGraph(asAgent, scenario){
+  scenario = scenario || "valid";
+  const target = scenario === "foreign" ? "t5" : (asAgent ? "t3" : "t4");
   setBusy(target, "agent &rarr; sidecar &rarr; Graph...");
-  const r = await fetch("/api/graph-users?asAgent=" + asAgent);
+  const r = await fetch("/api/graph-users?asAgent=" + asAgent + "&scenario=" + scenario);
   const j = await r.json();
+  if (scenario === "foreign"){
+    if (j.error || j.sidecarBody){
+      const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
+      setHTML(target,
+        `<div class="ok">✓ Entra correctly REJECTED the foreign Agent Graph call</div>
+         <div class="small mt-2">Token acquisition failed before the call ever reached Graph. Foreign Agent ID was: <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span></div>
+         <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
+         <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
+      );
+    } else {
+      setHTML(target,
+        `<div class="bad">✗ UNEXPECTED: Graph call succeeded with the foreign Agent. The parentage check did NOT trigger.</div>
+         <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
+      );
+    }
+    return;
+  }
   if (j.error){ setHTML(target, errBox(j.error)); return; }
   const ok = j.graphHttp === 200;
   let listHtml = "";
@@ -356,8 +453,15 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;",
     `<div>Tenant: <span class="pill">${j.tenantId}</span></div>
      <div>Blueprint app: <span class="pill">${j.blueprintAppId}</span></div>
      <div>Agent Identity app: <span class="pill">${j.agentAppId}</span></div>
+     <div>Foreign Agent Identity (different Blueprint): <span class="pill">${j.foreignAgentAppId || '(not configured)'}</span></div>
      <div>Sidecar URL (in-pod): <span class="pill">${j.sidecar}</span></div>
      <div class="text-muted mt-1">Snapshot captured at: ${j.snapshotCapturedAt ? new Date(j.snapshotCapturedAt*1000).toLocaleString() : 'pending'}</div>`;
+  const fi = document.getElementById("foreign-info");
+  if (fi){
+    fi.innerHTML = j.foreignAgentAppId
+      ? `Will attempt to mint token for foreign Agent: <span class="pill">${j.foreignAgentAppId}</span>`
+      : `<span class="bad">FOREIGN_AGENT_APP_ID env var is not set on the agent container.</span>`;
+  }
 })();
 </script>
 </body></html>
