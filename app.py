@@ -104,18 +104,19 @@ def warmup():
 
 
 @app.get("/api/token")
-def api_token(asAgent: bool = True, scenario: str = "valid"):
+def api_token(asAgent: bool = True, scenario: str = "valid", agentId: str | None = None):
     """scenario: 'valid' = use AGENT_APP_ID (parented by our Blueprint).
-                 'foreign' = use FOREIGN_AGENT_APP_ID (parented by a DIFFERENT Blueprint).
+                 'foreign' = use FOREIGN_AGENT_APP_ID, OR the agentId query param if provided.
        Foreign call should fail at Entra with an AADSTS error proving Entra enforces
        Blueprint-Agent parentage server-side."""
     import uuid
     cid = str(uuid.uuid4())
     override = None
     if scenario == "foreign":
-        if not FOREIGN_AGENT_APP_ID:
-            return JSONResponse({"error": "FOREIGN_AGENT_APP_ID env var is not set"}, status_code=400)
-        override = FOREIGN_AGENT_APP_ID
+        candidate = (agentId or FOREIGN_AGENT_APP_ID or "").strip()
+        if not candidate:
+            return JSONResponse({"error": "Provide an Agent App ID, or set FOREIGN_AGENT_APP_ID env var."}, status_code=400)
+        override = candidate
     try:
         return fetch_token(asAgent, correlation_id=cid, force_refresh=True, agent_id=override)
     except Exception as e:
@@ -123,14 +124,15 @@ def api_token(asAgent: bool = True, scenario: str = "valid"):
 
 
 @app.get("/api/graph-users")
-def api_graph_users(asAgent: bool = True, scenario: str = "valid"):
+def api_graph_users(asAgent: bool = True, scenario: str = "valid", agentId: str | None = None):
     import uuid
     cid = str(uuid.uuid4())
     effective_agent = AGENT_APP_ID
     if scenario == "foreign":
-        if not FOREIGN_AGENT_APP_ID:
-            return JSONResponse({"error": "FOREIGN_AGENT_APP_ID env var is not set"}, status_code=400)
-        effective_agent = FOREIGN_AGENT_APP_ID
+        candidate = (agentId or FOREIGN_AGENT_APP_ID or "").strip()
+        if not candidate:
+            return JSONResponse({"error": "Provide an Agent App ID, or set FOREIGN_AGENT_APP_ID env var."}, status_code=400)
+        effective_agent = candidate
     qs = {
         "optionsOverride.RelativePath": "users?$top=3&$select=displayName,userPrincipalName,id",
         "optionsOverride.HttpMethod": "Get",
@@ -254,6 +256,10 @@ PAGE = """<!doctype html>
 <div class="step">
   <h3>Step 1 — Get a Bearer token AS the Agent Identity</h3>
   <p class="why">The agent has <b>no credentials</b>. It asks the sidecar for a token. The sidecar uses the <b>Blueprint</b>'s client secret to authenticate to Entra, plus an <code>AgentIdentity</code> hint so Entra mints the token <b>as the Agent</b>.</p>
+  <div class="small text-muted mb-2" style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; padding:.6rem .8rem">
+    <b>Where does the Agent Identity actually live?</b><br>
+    The Agent Identity is <b>not</b> in this container's code or environment — it is a real <b>app registration in your Entra tenant</b> (App ID <span class="pill" id="agent-pill"></span>), <b>parented by the Blueprint</b> <span class="pill" id="bp-pill"></span>. Entra stores the parent ↔ child relationship server-side as a <i>federated identity credential</i> on the Blueprint. The agent code only knows the Agent's App ID and passes it as the <code>AgentIdentity</code> query parameter; Entra does the actual lookup and parentage check before issuing the token.
+  </div>
   <button class="btn btn-primary" onclick="getToken(true)">Get Agent Token</button>
   <div id="t1" class="mt-3"></div>
 </div>
@@ -284,8 +290,16 @@ PAGE = """<!doctype html>
   <h3>Step 5 — Security boundary: what if the Agent belongs to a <i>different</i> Blueprint?</h3>
   <p class="why">We ask the same sidecar (which holds <b>our</b> Blueprint's secret) to mint a token for an Agent whose parent is a <b>different</b> Blueprint. Entra checks the parentage server-side and should <b>reject</b> the request — proving a Blueprint cannot impersonate Agents it doesn't own. The error message from Entra will appear below.</p>
   <div id="foreign-info" class="small text-muted mb-2"></div>
-  <button class="btn btn-danger" onclick="getToken(true,'foreign')">Try to get token for FOREIGN Agent</button>
-  <button class="btn btn-danger" onclick="callGraph(true,'foreign')">Call Graph as FOREIGN Agent</button>
+  <div class="mb-2">
+    <label class="small text-muted" for="foreignInput">Agent App ID to test (paste any GUID — try yours, mine, or a random one):</label>
+    <div class="d-flex gap-2 mt-1" style="flex-wrap:wrap">
+      <input id="foreignInput" type="text" class="form-control form-control-sm" style="font-family:monospace; max-width:340px"
+             placeholder="00000000-0000-0000-0000-000000000000" />
+      <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetForeign()">use configured default</button>
+    </div>
+  </div>
+  <button class="btn btn-danger" onclick="getToken(true,'foreign')">Try to get token for entered Agent</button>
+  <button class="btn btn-danger" onclick="callGraph(true,'foreign')">Call Graph as entered Agent</button>
   <div id="t5" class="mt-3"></div>
 </div>
 
@@ -303,7 +317,12 @@ async function getToken(asAgent, scenario){
   scenario = scenario || "valid";
   const target = scenario === "foreign" ? "t5" : (asAgent ? "t1" : "t4");
   setBusy(target, "Loading...");
-  const r = await fetch("/api/token?asAgent=" + asAgent + "&scenario=" + scenario);
+  let url = "/api/token?asAgent=" + asAgent + "&scenario=" + scenario;
+  if (scenario === "foreign"){
+    const v = (document.getElementById("foreignInput")||{}).value;
+    if (v && v.trim()) url += "&agentId=" + encodeURIComponent(v.trim());
+  }
+  const r = await fetch(url);
   const j = await r.json();
   if (scenario === "foreign"){
     // Expecting failure — render the error nicely
@@ -366,7 +385,12 @@ async function callGraph(asAgent, scenario){
   scenario = scenario || "valid";
   const target = scenario === "foreign" ? "t5" : (asAgent ? "t3" : "t4");
   setBusy(target, "agent &rarr; sidecar &rarr; Graph...");
-  const r = await fetch("/api/graph-users?asAgent=" + asAgent + "&scenario=" + scenario);
+  let url = "/api/graph-users?asAgent=" + asAgent + "&scenario=" + scenario;
+  if (scenario === "foreign"){
+    const v = (document.getElementById("foreignInput")||{}).value;
+    if (v && v.trim()) url += "&agentId=" + encodeURIComponent(v.trim());
+  }
+  const r = await fetch(url);
   const j = await r.json();
   if (scenario === "foreign"){
     if (j.error || j.sidecarBody){
@@ -447,6 +471,12 @@ function setHTML(id, html){ document.getElementById(id).innerHTML = html; }
 function errBox(m){ return `<div class="bad">${escapeHtml(m)}</div>`; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+let CONFIGURED_FOREIGN_DEFAULT = "";
+function resetForeign(){
+  const el = document.getElementById("foreignInput");
+  if (el) el.value = CONFIGURED_FOREIGN_DEFAULT;
+}
+
 (async () => {
   const r = await fetch("/api/info"); const j = await r.json();
   document.getElementById("info-body").innerHTML =
@@ -456,12 +486,18 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;",
      <div>Foreign Agent Identity (different Blueprint): <span class="pill">${j.foreignAgentAppId || '(not configured)'}</span></div>
      <div>Sidecar URL (in-pod): <span class="pill">${j.sidecar}</span></div>
      <div class="text-muted mt-1">Snapshot captured at: ${j.snapshotCapturedAt ? new Date(j.snapshotCapturedAt*1000).toLocaleString() : 'pending'}</div>`;
+  // Inline pills inside Step 1's "where does it live" callout
+  const ap = document.getElementById("agent-pill"); if (ap) ap.textContent = j.agentAppId || '?';
+  const bp = document.getElementById("bp-pill");    if (bp) bp.textContent = j.blueprintAppId || '?';
   const fi = document.getElementById("foreign-info");
   if (fi){
     fi.innerHTML = j.foreignAgentAppId
-      ? `Will attempt to mint token for foreign Agent: <span class="pill">${j.foreignAgentAppId}</span>`
-      : `<span class="bad">FOREIGN_AGENT_APP_ID env var is not set on the agent container.</span>`;
+      ? `Default Agent App ID (from <code>FOREIGN_AGENT_APP_ID</code> env var): <span class="pill">${j.foreignAgentAppId}</span>. You can override below — paste any GUID and we'll send <code>?AgentIdentity=&lt;your value&gt;</code> to the sidecar.`
+      : `No default configured. Paste any Agent App ID below and we'll attempt to mint a token for it via this sidecar.`;
   }
+  CONFIGURED_FOREIGN_DEFAULT = j.foreignAgentAppId || "";
+  const inp = document.getElementById("foreignInput");
+  if (inp && !inp.value) inp.value = CONFIGURED_FOREIGN_DEFAULT;
 })();
 </script>
 </body></html>
