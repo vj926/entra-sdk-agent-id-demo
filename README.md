@@ -17,6 +17,8 @@ A working end-to-end demo of **Microsoft Entra Agent Identity**: a credential-le
 ---
 
 ## How the flow works (Step 1 example)
+<img width="1716" height="1310" alt="image" src="https://github.com/user-attachments/assets/dbe7479a-34ab-445a-aa55-ee465f6d8d6d" />
+
 
 ```
 Browser ──► Agent (FastAPI :8000) ──► Sidecar (:5000) ──► Entra (token endpoint) ──► JWT
