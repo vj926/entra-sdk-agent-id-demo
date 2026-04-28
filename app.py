@@ -329,7 +329,7 @@ async function getToken(asAgent, scenario){
     if (j.error || j.sidecarBody){
       const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
       setHTML(target,
-        `<div class="bad">✗ Entra REJECTED the foreign Agent request</div>
+        `<div class="bad">Entra REJECTED the foreign Agent request</div>
          <div class="small mt-2">This is the security boundary in action. The sidecar authenticated with our Blueprint's secret, but Entra checked the parentage of <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span> and refused to mint a token because it isn't parented by our Blueprint.</div>
          <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
@@ -337,7 +337,7 @@ async function getToken(asAgent, scenario){
     } else {
       // Unexpected success — flag it red
       setHTML(target,
-        `<div class="bad">✗ UNEXPECTED: token was minted for the foreign Agent. The parentage check did NOT trigger.</div>
+        `<div class="bad">UNEXPECTED: token was minted for the foreign Agent. The parentage check did NOT trigger.</div>
          <div class="small text-muted">appid in token: <span class="pill">${j.claims && j.claims.appid || '?'}</span></div>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
@@ -396,14 +396,14 @@ async function callGraph(asAgent, scenario){
     if (j.error || j.sidecarBody){
       const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
       setHTML(target,
-        `<div class="bad">✗ Entra REJECTED the foreign Agent Graph call</div>
+        `<div class="bad">Entra REJECTED the foreign Agent Graph call</div>
          <div class="small mt-2">Token acquisition failed before the call ever reached Graph. Foreign Agent ID was: <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span></div>
          <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     } else {
       setHTML(target,
-        `<div class="bad">✗ UNEXPECTED: Graph call succeeded with the foreign Agent. The parentage check did NOT trigger.</div>
+        `<div class="bad">UNEXPECTED: Graph call succeeded with the foreign Agent. The parentage check did NOT trigger.</div>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     }
