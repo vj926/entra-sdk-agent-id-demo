@@ -286,20 +286,20 @@ PAGE = """<!doctype html>
   <div id="t4" class="mt-3"></div>
 </div>
 
-<div class="step">
-  <h3>Step 5 — Test ANY Agent App ID against this sidecar</h3>
-  <p class="why">This sidecar holds <b>our</b> Blueprint's secret (<code>a90a55dc-…</code>). Paste any Agent App ID below and we'll ask Entra to mint a token for it. Entra will <b>succeed</b> if the Agent is parented by our Blueprint via a federated identity credential, and <b>reject</b> with <code>AADSTS700213</code> otherwise.</p>
+<div class="step" style="border-color:#fca5a5; background:#fef2f2">
+  <h3>Step 5 — Security boundary: what if the Agent belongs to a <i>different</i> Blueprint?</h3>
+  <p class="why">We ask the same sidecar (which holds <b>our</b> Blueprint's secret) to mint a token for an Agent whose parent is a <b>different</b> Blueprint. Entra checks the parentage server-side and should <b>reject</b> the request — proving a Blueprint cannot impersonate Agents it doesn't own. The error message from Entra will appear below.</p>
   <div id="foreign-info" class="small text-muted mb-2"></div>
   <div class="mb-2">
-    <label class="small text-muted" for="foreignInput">Agent App ID to test (paste any GUID):</label>
+    <label class="small text-muted" for="foreignInput">Agent App ID to test (paste any GUID — try yours, mine, or a random one):</label>
     <div class="d-flex gap-2 mt-1" style="flex-wrap:wrap">
       <input id="foreignInput" type="text" class="form-control form-control-sm" style="font-family:monospace; max-width:340px"
              placeholder="00000000-0000-0000-0000-000000000000" />
       <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetForeign()">use configured default</button>
     </div>
   </div>
-  <button class="btn btn-primary" onclick="getToken(true,'foreign')">Try to get token for entered Agent</button>
-  <button class="btn btn-primary" onclick="callGraph(true,'foreign')">Call Graph as entered Agent</button>
+  <button class="btn btn-danger" onclick="getToken(true,'foreign')">Try to get token for entered Agent</button>
+  <button class="btn btn-danger" onclick="callGraph(true,'foreign')">Call Graph as entered Agent</button>
   <div id="t5" class="mt-3"></div>
 </div>
 
@@ -325,21 +325,20 @@ async function getToken(asAgent, scenario){
   const r = await fetch(url);
   const j = await r.json();
   if (scenario === "foreign"){
-    const idTested = (document.getElementById("foreignInput")||{}).value || j.agentIdUsed || '';
+    // Expecting failure — render the error nicely
     if (j.error || j.sidecarBody){
       const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
       setHTML(target,
-        `<div class="bad">✗ Entra REJECTED this Agent</div>
-         <div class="small mt-2">Agent <span class="pill">${escapeHtml(idTested)}</span> is <b>not</b> parented by our Blueprint (<span class="pill">${BLUEPRINT_APP_ID_JS}</span>) — or it doesn't exist. Entra refused to mint a token.</div>
+        `<div class="ok">✓ Entra correctly REJECTED the foreign Agent request</div>
+         <div class="small mt-2">This is the security boundary in action. The sidecar authenticated with our Blueprint's secret, but Entra checked the parentage of <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span> and refused to mint a token because it isn't parented by our Blueprint.</div>
          <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     } else {
-      const appid = (j.claims && j.claims.appid) || '?';
+      // Unexpected success — flag it red
       setHTML(target,
-        `<div class="ok">✓ Entra MINTED a token for this Agent</div>
-         <div class="small mt-2">Agent <span class="pill">${escapeHtml(idTested)}</span> <b>is</b> parented by our Blueprint (<span class="pill">${BLUEPRINT_APP_ID_JS}</span>). The token's <code>appid</code> claim = <span class="pill">${escapeHtml(appid)}</span>, expiring ${escapeHtml(j.exp_human||'')}.</div>
-         <details class="mt-2"><summary>show raw bearer (truncated)</summary><pre>${escapeHtml(j.bearer_short||'')}</pre></details>
+        `<div class="bad">✗ UNEXPECTED: token was minted for the foreign Agent. The parentage check did NOT trigger.</div>
+         <div class="small text-muted">appid in token: <span class="pill">${j.claims && j.claims.appid || '?'}</span></div>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     }
@@ -394,25 +393,21 @@ async function callGraph(asAgent, scenario){
   const r = await fetch(url);
   const j = await r.json();
   if (scenario === "foreign"){
-    const idTested = (document.getElementById("foreignInput")||{}).value || j.agentIdUsed || '';
     if (j.error || j.sidecarBody){
       const msg = (j.sidecarBody && (j.sidecarBody.error_description || j.sidecarBody.error || JSON.stringify(j.sidecarBody))) || j.error || "rejected";
       setHTML(target,
-        `<div class="bad">✗ Entra REJECTED this Agent — Graph call never happened</div>
-         <div class="small mt-2">Agent <span class="pill">${escapeHtml(idTested)}</span> is not parented by our Blueprint, so token acquisition failed before reaching Graph.</div>
+        `<div class="ok">✓ Entra correctly REJECTED the foreign Agent Graph call</div>
+         <div class="small mt-2">Token acquisition failed before the call ever reached Graph. Foreign Agent ID was: <span class="pill">${escapeHtml(j.agentIdUsed||'')}</span></div>
          <details class="mt-2" open><summary>Entra / sidecar error</summary><pre>${escapeHtml(typeof msg === 'string' ? msg : JSON.stringify(msg,null,2))}</pre></details>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     } else {
-      const users = (j.value || []).slice(0, 5);
       setHTML(target,
-        `<div class="ok">✓ Graph call SUCCEEDED as Agent <span class="pill">${escapeHtml(idTested)}</span></div>
-         <div class="small mt-2">This Agent is parented by our Blueprint, Entra minted a token, and Graph returned ${ (j.value||[]).length } users.</div>
-         <details class="mt-2"><summary>first ${users.length} users</summary><pre>${escapeHtml(JSON.stringify(users,null,2))}</pre></details>`
+        `<div class="bad">✗ UNEXPECTED: Graph call succeeded with the foreign Agent. The parentage check did NOT trigger.</div>
+         <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     }
     return;
-  }
   }
   if (j.error){ setHTML(target, errBox(j.error)); return; }
   const ok = j.graphHttp === 200;
@@ -477,7 +472,6 @@ function errBox(m){ return `<div class="bad">${escapeHtml(m)}</div>`; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 let CONFIGURED_FOREIGN_DEFAULT = "";
-let BLUEPRINT_APP_ID_JS = "";
 function resetForeign(){
   const el = document.getElementById("foreignInput");
   if (el) el.value = CONFIGURED_FOREIGN_DEFAULT;
@@ -497,12 +491,11 @@ function resetForeign(){
   const bp = document.getElementById("bp-pill");    if (bp) bp.textContent = j.blueprintAppId || '?';
   const fi = document.getElementById("foreign-info");
   if (fi){
-    const valid = j.agentAppId ? `<div>Try our valid Agent: <span class="pill" style="cursor:pointer" onclick="document.getElementById('foreignInput').value='${j.agentAppId}'">${j.agentAppId}</span> (click to use)</div>` : '';
-    const foreign = j.foreignAgentAppId ? `<div>Try a foreign Agent (different Blueprint): <span class="pill" style="cursor:pointer" onclick="document.getElementById('foreignInput').value='${j.foreignAgentAppId}'">${j.foreignAgentAppId}</span> (click to use)</div>` : '';
-    fi.innerHTML = valid + foreign + `<div class="text-muted mt-1">Or paste any GUID. We'll send <code>?AgentIdentity=&lt;your value&gt;</code> to the sidecar.</div>`;
+    fi.innerHTML = j.foreignAgentAppId
+      ? `Default Agent App ID (from <code>FOREIGN_AGENT_APP_ID</code> env var): <span class="pill">${j.foreignAgentAppId}</span>. You can override below — paste any GUID and we'll send <code>?AgentIdentity=&lt;your value&gt;</code> to the sidecar.`
+      : `No default configured. Paste any Agent App ID below and we'll attempt to mint a token for it via this sidecar.`;
   }
   CONFIGURED_FOREIGN_DEFAULT = j.foreignAgentAppId || "";
-  BLUEPRINT_APP_ID_JS = j.blueprintAppId || "";
   const inp = document.getElementById("foreignInput");
   if (inp && !inp.value) inp.value = CONFIGURED_FOREIGN_DEFAULT;
 })();
