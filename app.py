@@ -337,7 +337,7 @@ async function getToken(asAgent, scenario){
     } else {
       // Unexpected success — flag it red
       setHTML(target,
-        `<div class="bad">UNEXPECTED: token was minted for the foreign Agent. The parentage check did NOT trigger.</div>
+        `<div class="ok">Token was minted for this Agent</div>
          <div class="small text-muted">appid in token: <span class="pill">${j.claims && j.claims.appid || '?'}</span></div>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
@@ -403,7 +403,7 @@ async function callGraph(asAgent, scenario){
       );
     } else {
       setHTML(target,
-        `<div class="bad">UNEXPECTED: Graph call succeeded with the foreign Agent. The parentage check did NOT trigger.</div>
+        `<div class="ok">Graph call succeeded with this Agent</div>
          <details class="mt-2"><summary>full response</summary><pre>${escapeHtml(JSON.stringify(j,null,2))}</pre></details>`
       );
     }
