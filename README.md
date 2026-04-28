@@ -17,10 +17,8 @@ A working end-to-end demo of **Microsoft Entra Agent Identity**: a credential-le
 ---
 
 ## How the flow works (Step 1 example)
-```
 <img width="1716" height="1310" alt="image" src="https://github.com/user-attachments/assets/dbe7479a-34ab-445a-aa55-ee465f6d8d6d" />
 
-```
 
 1. **Browser → Agent**: `GET /api/token?asAgent=true`. The browser only ever talks to `:8000`; the sidecar is private to the pod.
 2. **Agent → Sidecar**: in-pod HTTP call to the sidecar's `AuthorizationHeaderUnauthenticated/graph` route. The agent passes `AgentIdentity={AGENT_APP_ID}` — this is the lever.
