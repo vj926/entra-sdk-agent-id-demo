@@ -9,14 +9,14 @@ This document explains the demo from the ground up: what was created, how the pi
 Three logical "things" were brought into existence to make this demo work. Two live in **Microsoft Entra** (your identity provider) and one is the **runtime** that uses them.
 
 ### 1. Blueprint app registration (in Entra)
-- A standard Entra app registration. App ID: `a90a55dc-5702-46a4-9dc0-e263cc37e909`.
+- A standard Entra app registration. App ID: `<BLUEPRINT_APP_ID>`.
 - It owns a **client secret**. This is the *only* credential in the entire system.
 - Its sole job is to be the "credential holder" — to authenticate to Entra so that, on its behalf, Entra can issue tokens to its child Agent Identities.
 - It has **no permissions** of its own that the demo cares about. It does *not* have `User.Read.All`. It can't actually call Graph as itself for any real work.
-- A service principal of this app exists in the tenant (Object ID: `8b160754-4b61-4ecb-826b-c481917b9fa7`).
+- A service principal of this app exists in the tenant (Object ID: `<BLUEPRINT_SERVICE_PRINCIPAL_OBJECT_ID>`).
 
 ### 2. Agent Identity app registration (in Entra)
-- Another Entra app registration, but a special kind. App ID: `beab1093-dd04-4821-b7a2-6e692a130487`.
+- Another Entra app registration, but a special kind. App ID: `<AGENT_IDENTITY_APP_ID>`.
 - It is **parented by the Blueprint** (this is the unique part). Entra stores this parent → child relationship as a **federated identity credential** on the Blueprint, with a subject like `/eid1/c/pub/t/<tenant>/a/<blueprint-handle>/<agent-app-id>`.
 - It has **no client secret, no certificate, no managed identity, no credentials of any kind**. By design.
 - It does have **permissions**: `User.Read.All` on Microsoft Graph (app-only), admin-consented.
@@ -76,7 +76,7 @@ For each step, you'll see: **the actor**, **the trigger**, **the API call** with
 | | |
 |---|---|
 | **Actor** | The FastAPI handler in `app.py` |
-| **API call** | `GET http://localhost:5000/AuthorizationHeaderUnauthenticated/graph?AgentIdentity=beab1093-dd04-4821-b7a2-6e692a130487&optionsOverride.AcquireTokenOptions.CorrelationId=<GUID>&optionsOverride.AcquireTokenOptions.ForceRefresh=true` |
+| **API call** | `GET http://localhost:5000/AuthorizationHeaderUnauthenticated/graph?AgentIdentity=<AGENT_IDENTITY_APP_ID>&optionsOverride.AcquireTokenOptions.CorrelationId=<GUID>&optionsOverride.AcquireTokenOptions.ForceRefresh=true` |
 | **Receiver action** | The auth-sidecar receives this. It looks up the configured downstream API named `graph` (configured at startup with scope `https://graph.microsoft.com/.default`). It now needs to acquire a token for that scope. Because the request says `AgentIdentity=<Agent App ID>`, the sidecar will ask Entra for a token *as that Agent*, not as the Blueprint. |
 | **Path components** | `AuthorizationHeader` = "give me a `Bearer …` header"; `Unauthenticated` = "I, the caller, don't need to present a token to you" — the sidecar trusts in-pod localhost calls; `/graph` = the named downstream API. |
 | **Key parameter — `AgentIdentity`** | This is **the lever**. Without it, the sidecar would mint a Blueprint token (Step 4). With it, the sidecar is asking Entra to mint a token *for* this Agent. |
@@ -89,9 +89,9 @@ For each step, you'll see: **the actor**, **the trigger**, **the API call** with
 | | |
 |---|---|
 | **Actor** | The sidecar's MSAL client (running as the Blueprint) |
-| **API call** | `POST https://login.microsoftonline.com/98430660-2a7e-4e6b-b49c-800a8ba8b657/oauth2/v2.0/token` |
-| **Body (form-encoded)** | `client_id=a90a55dc-…` (Blueprint App ID)<br>`client_secret=b0G8Q~…` (Blueprint client secret, from the ACA secret)<br>`scope=https://graph.microsoft.com/.default`<br>`grant_type=client_credentials`<br>plus an internal extension carrying the `AgentIdentity` (the requested child Agent) |
-| **Receiver action (Entra)** | Entra performs three checks in sequence:<br>① **Authenticate**: validate the Blueprint's client secret matches the Blueprint's stored credentials. ✅<br>② **Parentage check**: confirm that the requested Agent Identity (`beab1093-…`) is registered as a child of the Blueprint via a federated identity credential. ✅<br>③ **Permission check**: confirm the *Agent* has been granted the requested scope (`User.Read.All` on Graph, app-only). ✅<br>Then mints a JWT whose claims describe the **Agent**, not the Blueprint. |
+| **API call** | `POST https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token` |
+| **Body (form-encoded)** | `client_id=<BLUEPRINT_APP_ID>` (Blueprint App ID)<br>`client_secret=<BLUEPRINT_CLIENT_SECRET>` (Blueprint client secret, from the ACA secret)<br>`scope=https://graph.microsoft.com/.default`<br>`grant_type=client_credentials`<br>plus an internal extension carrying the `AgentIdentity` (the requested child Agent) |
+| **Receiver action (Entra)** | Entra performs three checks in sequence:<br>① **Authenticate**: validate the Blueprint's client secret matches the Blueprint's stored credentials. ✅<br>② **Parentage check**: confirm that the requested Agent Identity (`<AGENT_IDENTITY_APP_ID>`) is registered as a child of the Blueprint via a federated identity credential. ✅<br>③ **Permission check**: confirm the *Agent* has been granted the requested scope (`User.Read.All` on Graph, app-only). ✅<br>Then mints a JWT whose claims describe the **Agent**, not the Blueprint. |
 | **Why this hop?** | This is where the credential leaves the pod. Everything else is local. This is also where the security boundary is enforced — Entra is the trust authority, not the sidecar, not the agent. |
 | **Audit side-effect** | Entra writes a row to **Sign-in logs → Service principal sign-ins** with: *Application = the Agent's name*, *Is Agent = Yes*, *Agent type = Agent Identity*, *Agent parent ID = Blueprint*, *Client credential type = ClientSecret*, *Status = Success*, *Unique token identifier (uti)*. This row is the demo's audit-trail proof. |
 
@@ -100,7 +100,7 @@ For each step, you'll see: **the actor**, **the trigger**, **the API call** with
 | | |
 |---|---|
 | **API response** | `200 OK` with JSON: `{"access_token":"eyJ…", "token_type":"Bearer", "expires_in":3600, …}` |
-| **JWT body — claims that matter** | `appid = beab1093-…` → the **Agent**'s App ID. This is what makes Graph treat the call as the Agent.<br>`xms_par_app_azp = a90a55dc-…` → the **parent app's azp** — the Blueprint that authenticated. Proves provenance.<br>`roles = ["User.Read.All"]` → the **Agent's** permissions, not the Blueprint's.<br>`idtyp = "app"` → app-only token (no user).<br>`aud = "https://graph.microsoft.com"` → audience.<br>`tid = 98430660-…` → tenant.<br>`uti` → unique token identifier — matches the "Unique token identifier" field in the Sign-in log row.<br>`iat`, `exp` → issue and expiry times. |
+| **JWT body — claims that matter** | `appid = <AGENT_IDENTITY_APP_ID>` → the **Agent**'s App ID. This is what makes Graph treat the call as the Agent.<br>`xms_par_app_azp = <BLUEPRINT_APP_ID>` → the **parent app's azp** — the Blueprint that authenticated. Proves provenance.<br>`roles = ["User.Read.All"]` → the **Agent's** permissions, not the Blueprint's.<br>`idtyp = "app"` → app-only token (no user).<br>`aud = "https://graph.microsoft.com"` → audience.<br>`tid = <TENANT_ID>` → tenant.<br>`uti` → unique token identifier — matches the "Unique token identifier" field in the Sign-in log row.<br>`iat`, `exp` → issue and expiry times. |
 | **Sidecar action** | Stores the token in its in-memory MSAL cache (keyed on client_id+scope+tenant), then formats a response for the agent. |
 
 #### Hop 5: Sidecar → Agent container
@@ -146,7 +146,7 @@ For each step, you'll see: **the actor**, **the trigger**, **the API call** with
 
 | | |
 |---|---|
-| **API call** | `POST http://localhost:5000/DownstreamApiUnauthenticated/graph?AgentIdentity=beab1093-…&optionsOverride.RelativePath=users%3F%24top%3D3%26%24select%3DdisplayName%2CuserPrincipalName%2Cid&optionsOverride.HttpMethod=Get&optionsOverride.AcquireTokenOptions.CorrelationId=<GUID>&optionsOverride.AcquireTokenOptions.ForceRefresh=true` |
+| **API call** | `POST http://localhost:5000/DownstreamApiUnauthenticated/graph?AgentIdentity=<AGENT_IDENTITY_APP_ID>&optionsOverride.RelativePath=users%3F%24top%3D3%26%24select%3DdisplayName%2CuserPrincipalName%2Cid&optionsOverride.HttpMethod=Get&optionsOverride.AcquireTokenOptions.CorrelationId=<GUID>&optionsOverride.AcquireTokenOptions.ForceRefresh=true` |
 | **Receiver action** | The sidecar does **two things in one call**:<br>① **Acquire a token** (same as Step 1, hop 3 — ask Entra for a token as the Agent).<br>② **Call Graph** with that token attached and the path/method specified by `RelativePath`+`HttpMethod`. |
 | **Path components** | `DownstreamApi` (vs `AuthorizationHeader`) tells the sidecar to actually invoke the API, not just hand back a header. |
 | **Why merge into one call?** | So the agent code never has to handle the token at all. The agent just says "GET /users?$top=3 on the graph API as this Agent" — the sidecar does both the auth dance and the HTTP call. |
@@ -161,7 +161,7 @@ Same as Step 1, hop 3. Result: a JWT for the Agent. (May be cache hit if `ForceR
 |---|---|
 | **API call** | `GET https://graph.microsoft.com/v1.0/users?$top=3&$select=displayName,userPrincipalName,id` |
 | **Headers** | `Authorization: Bearer <Agent JWT>` |
-| **Receiver action (Graph)** | Graph performs an **independent** validation of the JWT. The sidecar's say-so is irrelevant here. Graph checks:<br>① **Signature** — verifies the JWT was signed by Entra's signing key (fetched from the well-known `jwks_uri`).<br>② **Issuer** — `iss` must be `https://sts.windows.net/<tenant>/` (or `…/v2.0`).<br>③ **Audience** — `aud` must be `https://graph.microsoft.com`.<br>④ **Expiry** — `exp` must be in the future, `nbf` must be in the past.<br>⑤ **Authorization** — does the `appid` in the token (the Agent) have `User.Read.All`? Yes, it does (granted in the Phase 1 setup script).<br>If everything passes → returns the data. If anything fails → returns 401/403.<br>**Important:** Graph reads `appid` from the token. That's why "the call is as the Agent" — Graph is identifying the caller by `appid`, which is `beab1093-…`. |
+| **Receiver action (Graph)** | Graph performs an **independent** validation of the JWT. The sidecar's say-so is irrelevant here. Graph checks:<br>① **Signature** — verifies the JWT was signed by Entra's signing key (fetched from the well-known `jwks_uri`).<br>② **Issuer** — `iss` must be `https://sts.windows.net/<tenant>/` (or `…/v2.0`).<br>③ **Audience** — `aud` must be `https://graph.microsoft.com`.<br>④ **Expiry** — `exp` must be in the future, `nbf` must be in the past.<br>⑤ **Authorization** — does the `appid` in the token (the Agent) have `User.Read.All`? Yes, it does (granted in the Phase 1 setup script).<br>If everything passes → returns the data. If anything fails → returns 401/403.<br>**Important:** Graph reads `appid` from the token. That's why "the call is as the Agent" — Graph is identifying the caller by `appid`, which is `<AGENT_IDENTITY_APP_ID>`. |
 | **API response** | `200 OK` with JSON: `{"value": [{"displayName":"Conf Room Adams", …}, …]}` (3 users from the M365 directory). |
 | **Why this hop?** | This is the *actual work* the Agent is doing. Reading users out of a directory. Steps 1-2 prove "we can mint a token"; Step 3 proves "real downstream APIs accept that token and recognize it as the Agent." |
 
@@ -189,7 +189,7 @@ The flow is identical to Step 1, with one change:
 | Hop | Step 1 (valid Agent) | Step 4 (Blueprint) |
 |---|---|---|
 | Browser → Agent | `GET /api/token?asAgent=true` | `GET /api/token?asAgent=false` |
-| Agent → Sidecar | `…/AuthorizationHeaderUnauthenticated/graph?AgentIdentity=beab1093-…&…` | `…/AuthorizationHeaderUnauthenticated/graph?…` (no `AgentIdentity` param) |
+| Agent → Sidecar | `…/AuthorizationHeaderUnauthenticated/graph?AgentIdentity=<AGENT_IDENTITY_APP_ID>&…` | `…/AuthorizationHeaderUnauthenticated/graph?…` (no `AgentIdentity` param) |
 | Sidecar → Entra | client_credentials with Blueprint secret + `AgentIdentity` extension | client_credentials with Blueprint secret only |
 | Entra → Sidecar | JWT with `appid=Agent`, `xms_par_app_azp=Blueprint`, `roles=[User.Read.All]` | JWT with `appid=Blueprint`, **no** `xms_par_app_azp`, `roles=[]` |
 

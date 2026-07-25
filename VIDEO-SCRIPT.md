@@ -84,8 +84,8 @@ Lines marked **[ON SCREEN]** are what should be visible. Lines marked **[CLICK]*
 > "Step 2 is purely client-side — no network call. The browser already has the decoded claims from Step 1, and it lays them out as a table.
 >
 > Look at three claims in particular:
-> - **`appid`** — this is `beab1093...`, our Agent App ID. ✅
-> - **`xms_par_app_azp`** — this is `a90a55dc...`, our Blueprint App ID. This claim only appears on Agent Identity tokens; it tells you *who actually authenticated* on the Agent's behalf. ✅
+> - **`appid`** — this is `<AGENT_IDENTITY_APP_ID>`, our Agent App ID. ✅
+> - **`xms_par_app_azp`** — this is `<BLUEPRINT_APP_ID>`, our Blueprint App ID. This claim only appears on Agent Identity tokens; it tells you *who actually authenticated* on the Agent's behalf. ✅
 > - **`roles`** — this is `User.Read.All`, the Agent's permission, not the Blueprint's. ✅
 >
 > Without these three claims, you couldn't tell an Agent token apart from a regular app-only token. *With* them, you can prove the whole Agent Identity flow worked."
