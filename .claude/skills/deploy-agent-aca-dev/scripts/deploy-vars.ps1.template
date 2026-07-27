@@ -1,0 +1,25 @@
+# Copy this file to /tmp/deploy-aca-vars.ps1 and replace placeholders.
+
+$SubscriptionId = "<AZURE_SUBSCRIPTION_ID>"
+$TenantId = "<ENTRA_TENANT_ID>"
+
+$ResourceGroup = "rg-agent-id-aca-dev"
+$Location = "eastus"
+
+# ACR name must be globally unique, 5-50 lowercase alphanumeric characters.
+$AcrName = "<uniqueacrname>"
+$AcrSku = "Basic"
+
+$ContainerAppEnvironment = "cae-agent-id-demo"
+$ContainerAppName = "agent-id-demo"
+
+$ImageName = "agent-demo"
+$ImageTag = "v1"
+$SidecarImage = "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless"
+
+$BlueprintAppId = "<BLUEPRINT_APP_ID>"
+$BlueprintClientSecret = "<BLUEPRINT_CLIENT_SECRET>"
+$AgentAppId = "<AGENT_IDENTITY_APP_ID>"
+
+# Optional: an Agent Identity parented by a different Blueprint, used for the negative test.
+$ForeignAgentAppId = ""

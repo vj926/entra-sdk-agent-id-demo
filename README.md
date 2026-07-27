@@ -13,6 +13,8 @@ A working end-to-end demo of **Microsoft Entra Agent Identity**: a credential-le
 | `app.py` | FastAPI demo UI with 4 stepped buttons (Get Agent Token / Decode JWT / Call Graph / Negative comparison). |
 | `Dockerfile` | python:3.12-slim image, exposes port 8000. |
 | `.env.example` | Required environment variables for `app.py`. |
+| `.claude/skills/deploy-agent-aca-dev` | AI-led skill for deploying this demo to Azure Container Apps with the Entra auth-sidecar. |
+| `.claude/skills/teardown-agent-aca-dev` | Paired cleanup skill for the Azure Container Apps deployment. |
 
 ---
 
